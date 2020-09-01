@@ -1,156 +1,192 @@
-package bps-rest-go
-
+//Package bpsrestgo provides an API wrapper for calling BreakingPoints
+//restful API
+package bpsrestgo
 
 import (
 	"bytes"
-	"io/ioutil"
-	"net/http"
-	"net/url"
+	"crypto/tls"
 	"encoding/json"
+	"fmt"
+	"net/http"
 )
 
-
+//Version documents the packages current version
 const Version = "0.1.0"
 
-// Supported HTTP verbs.
-const (
-	Get    Method = "GET"
-	Post   Method = "POST"
-	Put    Method = "PUT"
-	Patch  Method = "PATCH"
-	Delete Method = "DELETE"
-)
-
-// Request holds the request to an API Call.
-type Request struct {
-	Method      Method
-	BaseURL     string 
-	Headers     map[string]string
-	QueryParams map[string]string
-	Body        []byte
-}
-
-// Response holds the response from an API call.
+// LoginResponse holds the response result of an API call.
 type loginResponse struct {
-    apiKey string         `json:"apiKey"`
-    sessionName string	  `json:"sessionName"`
-    sessionId string      `json:"sessionId"`
-    username string 	  `json:"username"`
-    userAccountUrl string `json:"userAccountUrl"`
+	ApiKey         string
+	SessionName    string
+	SessionID      string
+	Username       string
+	UserAccountURL string
 }
 
-
-
-// RestError is a struct for an error handling.
-type errorResponse struct {
-    Code    int    `json:"code"`
-    Message string `json:"message"`
-}
-
-// Error is the implementation of the error interface.
-func (e *RestError) Error() string {
-	return e.Response.Body
-}
-
-// Client allows modification of client headers, redirect policy
-// and other settings
-// See https://golang.org/pkg/net/http
-type Client struct {
-	HTTPClient *http.Client
-}
-
+// System defines and tracks the system connection information
 type System struct {
-	host	string
-	user	string
-	password string
-	sessionId string
-    apiKey string
-    sessionName string
-    sessionId string
-    userAccountUrl string
+	host           string
+	User           string `json:"username"`
+	Password       string `json:"password"`
+	sessionID      string
+	apiKey         string
+	sessionName    string
+	userAccountURL string
+	HTTPClient     *http.Client `json:"-"`
 }
 
-//bps = BPS(bps_system, bpsuser, bpspass)
-func BPS(bps_system,bpsuser,bpspass) (s *System, error){
-    return System{
-        host: bps_system,
-        user: bpsuser,
-        password: bpspass,
-    }
+//BPS initializes the system structure that is used to interact with this lib
+//   it is mostly formated like this to keep usage stylse with restPy
+func BPS(bpsSystem string, bpsUser string, bpsPass string) *System {
+	sys := &System{
+		host:       bpsSystem,
+		User:       bpsUser,
+		Password:   bpsPass,
+		HTTPClient: http.DefaultClient,
+	}
+
+	//need to ignore invalid certs
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
+	return sys
 }
+
 /*
 evasionProfile
-reports 
-capture 
-network 
-topology 
-superflow 
-testmodel 
-administration 
-results 
-statistics 
-appProfile 
-strikes 
-loadProfile 
-strikeList 
+reports
+capture
+network
+topology
+superflow
+testmodel
+administration
+results
+statistics
+appProfile
+strikes
+loadProfile
+strikeList
 */
 //connect to the system
-func (s *System) connect() (status, error){
+func (s *System) connect() error {
 	//https://<System Controller IP>/bps/api/v1
 	//post url='https://' + self.host + '/bps/api/v2/core/auth/logout', data=json.dumps({'username': self.user, 'password': self.password, 'sessionId': self.sessionId}), headers={'content-type': 'application/json'}, verify=False)
-    req, err := http.NewRequest("POST", 'https://' + s.host + '/bps/api/v1/auth/session', nil)
-    if err != nil {
-        return nil, err
-    }
 
-    //add the header
-    req.Header.Set("Content-Type", "application/json")
-    res, err := c.HTTPClient.Do(req)
-    if err != nil {
-        return err
-    }
+	jsonCreds, _ := json.Marshal(s)
+	fmt.Println(string(jsonCreds))
+	req, err := http.NewRequest("POST", "https://"+s.host+"/bps/api/v1/auth/session", bytes.NewBuffer(jsonCreds))
+	if err != nil {
+		return err
+	}
 
-    defer res.Body.Close()
+	//add the header
+	req.Header.Set("Content-Type", "application/json")
+	res, err := s.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
 
-    if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusBadRequest {
-        var errRes errorResponse
-        if err = json.NewDecoder(res.Body).Decode(&errRes); err == nil {
-            return errors.New(errRes.Message)
-        }
+	defer res.Body.Close()
 
-        return fmt.Errorf("unknown error, status code: %d", res.StatusCode)
-    }
+	if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("unknown error, status code: %d", res.StatusCode)
+	}
 
-    //save the response example
-    if err = json.NewDecoder(res.Body).Decode(&loginResponse); err != nil {
-        return err
-    }
-    s.apiKey = loginResponse.apiKey
-    s.sessionName = loginResponse.sessionName
-    s.sessionId = loginResponse.sessionId
-    s.userAccountUrl = loginResponse.userAccountUrl
+	//save the response example
+	resp := loginResponse{}
+	if err = json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		return err
+	}
 
-    return nil
+	//if all worked out store the response
+	fmt.Println(resp.ApiKey)
+	s.apiKey = resp.ApiKey
+	s.sessionName = resp.SessionName
+	s.sessionID = resp.SessionID
+	s.userAccountURL = resp.UserAccountURL
+
+	return nil
 }
+
+func (s *System) disconnect() error {
+	req, err := http.NewRequest(http.MethodDelete, "https://"+s.host+"/bps/api/v1/auth/session", nil)
+	if err != nil {
+		return err
+	}
+
+	//add the header
+	req.Header.Set("Content-Type", "application/json")
+	res, err := s.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("unknown error, status code: %d", res.StatusCode)
+	}
+
+	return nil
+}
+
+func (s *System) Login() error {
+
+}
+
+func (s *System) Logout() error {
+	
+}
+
+func (s *System) Get() error {
+	
+}
+
+func (s *System) Patch() error {
+	
+}
+
+func (s *System) Set() error {
+	return patch()
+}
+
+func (s *System) Put() error {
+	
+}
+
+func (s *System) Delete() error {
+	
+}
+
+//Options uses the provided path and returns the server response as a string
+func (s *System) Options(path string) string, error {
+	req, err := http.NewRequest(http.MethodOptions, "https://"+s.host+"/bps/api/v2/core/"+path, nil)
+	if err != nil {
+		return err
+	}
+
+	//add the header
+	req.Header.Set("Content-Type", "application/json")
+	res, err := s.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("unknown error, status code: %d", res.StatusCode)
+	}
+
+	return nil
+}
+
+
 
 //connect to the system
-func (s *System) login() (response, error){
+func (s *System) Login() error {
 	//https://<System Controller IP>/bps/api/v1
 	//post url='https://' + self.host + '/bps/api/v2/core/auth/logout', data=json.dumps({'username': self.user, 'password': self.password, 'sessionId': self.sessionId}), headers={'content-type': 'application/json'}, verify=False)
-	req, err := http.NewRequest("POST", 'https://' + s.host + '/bps/api/v2/core/auth/login', nil)
+	//req, err := http.NewRequest("POST", "https://"+s.host+"/bps/api/v2/core/auth/login", nil)
 
-}
-
-
-
-
-
-// AddQueryParameters adds query parameters to the URL.
-func AddQueryParameters(baseURL string, queryParams map[string]string) string {
-	baseURL += "?"
-	params := url.Values{}
-	for key, value := range queryParams {
-		params.Add(key, value)
-	}
-	return baseURL + params.Encode()
+	return nil
 }
